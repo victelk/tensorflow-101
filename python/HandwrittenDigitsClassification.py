@@ -14,18 +14,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 
-tf.logging.set_verbosity(tf.logging.INFO)
+tf.logging.set_verbosity(tf.logging.WARN)
 
 #-----------------------------------------------
 #variables
 
-epoch = 15000
+epoch = 1500
 learningRate = 0.1
 batch_size = 120
 
-mnist_data = "C:/tmp/MNIST_data"
+mnist_data = "/tmp/MNIST_data"
 
-trainForRandomSet = True
+trainForRandomSet = False
 
 #-----------------------------------------------
 #data process and transformation
@@ -44,83 +44,93 @@ print("test set consists of ", len(MNIST_DATASET.test.images), " instances")
 #visualization
 print("input layer consists of ", len(MNIST_DATASET.train.images[1]), " features ("
 	,math.sqrt(len(MNIST_DATASET.train.images[1])), "x", math.sqrt(len(MNIST_DATASET.train.images[1]))," pixel images)") #28x28 = 784 input feature
-"""
-print("features: ", MNIST_DATASET.train.images[1])
-print("labels: ", MNIST_DATASET.train.labels[1])
-"""
 
-"""
-#to display a sample
-sample = 2
-#print(MNIST_DATASET.train.images[sample])
-print(MNIST_DATASET.train.labels[sample])
-
-X = MNIST_DATASET.train.images[sample]
-X = X.reshape([28, 28]);
-#X = X.reshape([math.sqrt(len(MNIST_DATASET.train.images[1])), math.sqrt(len(MNIST_DATASET.train.images[1]))]);
-plt.gray()
-plt.imshow(X)
-plt.show()
-"""
 #-----------------------------------------------
-feature_columns = [tf.contrib.layers.real_valued_column("", dimension=len(MNIST_DATASET.train.images[1]))]
+feature_columns = [tf.contrib.layers.real_valued_column("pixels", dimension=len(MNIST_DATASET.train.images[1]))]
 
-classifier = tf.contrib.learn.DNNClassifier(
-	feature_columns=feature_columns
-	, n_classes=10 #0 to 9 - 10 classes
-	, hidden_units=[128, 32]  #2 hidden layers consisting of 128 and 32 units respectively
-	, optimizer=tf.train.ProximalAdagradOptimizer(learning_rate=learningRate)
-	, activation_fn = tf.nn.relu
-	#, activation_fn = tf.nn.softmax
-	, model_dir="model"
+classifier = tf.estimator.DNNClassifier(
+    feature_columns = feature_columns,
+    n_classes=10, #0 to 9 - 10 classes
+    hidden_units=[128, 32],  #2 hidden layers consisting of 128 and 32 units respectively
+    optimizer=tf.train.ProximalAdagradOptimizer(learning_rate=learningRate),
+    activation_fn = tf.nn.relu,
+    #activation_fn = tf.nn.softmax
+    model_dir="/tmp/model2"
 )
 
-#----------------------------------------
-#training
 
-if trainForRandomSet == False:
-	#train on all trainset
-	classifier.fit(train_data, train_target, steps=epoch)
-else:
-	def generate_input_fn(data, label):	
-		image_batch, label_batch = tf.train.shuffle_batch(
-			[data, label]
-			, batch_size=batch_size
-			, capacity=8*batch_size
-			, min_after_dequeue=4*batch_size
-			, enqueue_many=True
-		)
-		return image_batch, label_batch
-	
-	def input_fn_for_train():
-		return generate_input_fn(train_data, train_target)
-	
-	#train on small random selected dataset
-	classifier.fit(input_fn=input_fn_for_train, steps=epoch)
+'''
+def generate_input_fn(data, label):
+    image_batch, label_batch = tf.train.shuffle_batch(
+        [data, label]
+        , batch_size=batch_size
+        , capacity=8*batch_size
+        , min_after_dequeue=4*batch_size
+        , enqueue_many=True
+    )
+    return {"pixels":image_batch}, label_batch
+'''
+
+def my_generate_input_fn(data, label,  perform_shuffle=False):
+    dataset = (tf.data.Dataset.from_tensor_slices((data,label)))
+    if perform_shuffle:
+        dataset = dataset.shuffle(buffer_size = 256)
+    dataset = dataset.batch(batch_size)
+    iterator = dataset.make_one_shot_iterator()
+    image_batch, label_batch = iterator.get_next()
+    return {"pixels":image_batch}, label_batch
+
+
+def input_fn_for_train():
+    return my_generate_input_fn(train_data, train_target, perform_shuffle=True)
+
+
+def input_fn_for_test():
+    return my_generate_input_fn(test_data, test_target)
+
+
+# To inspect the output of input_fn_for_train:
+batch_features, batch_labels = input_fn_for_train()
+with tf.Session() as sess:
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+    print((sess.run(batch_features["pixels"])).shape)
+    print(batch_features["pixels"].shape)
+    print(batch_labels.shape)
+    # print(batch_labels[0].eval())
+    coord.request_stop()
+    coord.join(threads)
+
+'''
+#train on small random selected dataset
+classifier.train(input_fn=input_fn_for_train, steps=epoch)
 
 print("\n---training is over...")
 
 #----------------------------------------
 #apply to make predictions
 
-predictions = classifier.predict_classes(test_data)
-index = 0
-for i in predictions:
-	if index < 10: #visualize first 10 items on test set
-		print("actual: ", test_target[index], ", prediction: ", i)
-		
-		pred = MNIST_DATASET.test.images[index]
-		pred = pred.reshape([28, 28]);
-		plt.gray()
-		plt.imshow(pred)
-		plt.show()
-		
-	index  = index + 1
+predictions = list(classifier.predict(input_fn=input_fn_for_test))
+predicted_classes = [p["classes"] for p in predictions]
+#predicted_classes is list of numpy.ndarray of type class bytes
 
-#----------------------------------------
-#calculationg overall accuracy
+index = 0
+for p in predicted_classes[:10]:
+
+    print("actual: ", test_target[index], ", prediction: ", list(map(lambda x: x.decode('utf-8'),p)))
+
+    pred = MNIST_DATASET.test.images[index]
+    pred = pred.reshape([28, 28]);
+    plt.gray()
+    plt.imshow(pred)
+    plt.show()
+    index += 1
+
+# ----------------------------------------
+# calculationg overall accuracy
 
 print("\n---evaluation...")
-accuracy_score = classifier.evaluate(test_data, test_target, steps=epoch)['accuracy']
-print("accuracy: ", 100*accuracy_score,"%")
+accuracy_score = classifier.evaluate(input_fn=input_fn_for_test, steps=epoch)['accuracy']
+print("accuracy: ", 100 * accuracy_score, "%")
 
+'''
